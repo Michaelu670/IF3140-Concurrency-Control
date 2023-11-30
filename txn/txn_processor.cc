@@ -256,10 +256,44 @@ void TxnProcessor::RunOCCScheduler() {
   //
   // Implement this method!
   //
-  // [For now, run serial scheduler in order to make it through the test
-  // suite]
 
-  RunSerialScheduler();
+  Txn* txn;
+  while (tp_.Active()) {
+    // std::cout << "Run    " << txn->unique_id_ << '\n';
+    while (txn_requests_.Pop(&txn)) {
+      txn->occ_start_time_ = GetTime();
+      tp_.RunTask(new Method<TxnProcessor, void, Txn*>(
+            this,
+            &TxnProcessor::ExecuteTxn,
+            txn));  
+    }
+
+    while (completed_txns_.Pop(&txn)) {
+      for (Key key: txn->readset_) {
+        // Validation
+        if (storage_->Timestamp(key) > txn->occ_start_time_) {
+          txn->status_ = COMPLETED_A;
+        }
+      }
+
+      if (txn->status_ == COMPLETED_A) {
+        txn->reads_.clear();
+        txn->writes_.clear();
+        txn->status_ = ABORTED;
+
+        mutex_.Lock();
+        txn->unique_id_ = next_unique_id_++;
+        txn_requests_.Push(txn);
+        mutex_.Unlock();
+      }
+      else if (txn->status_ == COMPLETED_C) {
+        ApplyWrites(txn);
+        txn->status_ = COMMITTED;
+        txn_results_.Push(txn);
+      }
+    }
+    
+  }
 }
 
 void TxnProcessor::RunOCCParallelScheduler() {
